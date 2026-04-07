@@ -1,3 +1,8 @@
 ccxt
 pandas
 pytest
+xgboost
+scikit-learn
+ta
+numpy
+joblib

@@ -8,7 +8,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exchange_handler import ExchangeHandler
-from strategy import MeanReversionStrategy
+from strategy import MeanReversionStrategy, XGBoostStrategy
 from config.config import CONFIG
 
 # Configuración básica de logs
@@ -61,10 +61,11 @@ def analyze_market_and_recommend(handler, timeframe, window):
 
 def main():
     # Cargar parámetros desde el archivo de configuración
-    SYMBOL = CONFIG['trading']['symbol']
     TIMEFRAME = CONFIG['trading']['timeframe']
+    LIMIT = CONFIG['trading'].get('limit', 100)
     MEAN_WINDOW = CONFIG['strategy']['mean_window']
     THRESHOLD = CONFIG['strategy']['threshold']
+    USE_ML = CONFIG['strategy'].get('use_ml', False)
     
     # Parámetros del exchange
     EXCHANGE_ID = CONFIG['exchange']['id']
@@ -90,9 +91,38 @@ def main():
     print(f"\n✅ Operando con: {', '.join(SYMBOLS)}. Inicializando bot...\n")
     
     # Inicializar estrategia
-    strategy = MeanReversionStrategy(window=MEAN_WINDOW, threshold=THRESHOLD)
+    if USE_ML:
+        strategy = XGBoostStrategy(window=MEAN_WINDOW, threshold=THRESHOLD)
+    else:
+        strategy = MeanReversionStrategy(window=MEAN_WINDOW, threshold=THRESHOLD)
     
     logging.info(f"Iniciando bot multimoneda con estrategia {strategy.name}")
+
+    # 3. Fase de Entrenamiento (si se usa ML)
+    if USE_ML:
+        print("\n" + "="*50)
+        print("🧠 ENTRENANDO MODELOS DE IA...")
+        print("="*50)
+        for symbol in SYMBOLS:
+            try:
+                # Descargamos un historial más largo para el entrenamiento
+                train_limit = max(LIMIT, 500)
+                ohlcv = handler.exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=train_limit)
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                
+                # Inicializar y entrenar el predictor para este símbolo
+                if symbol not in strategy.predictors:
+                    from ml_logic import XGBoostPredictor
+                    strategy.predictors[symbol] = XGBoostPredictor(symbol)
+                
+                success = strategy.predictors[symbol].train(df)
+                if success:
+                    print(f"✅ [{symbol}] Modelo entrenado correctamente.")
+                else:
+                    print(f"⚠️ [{symbol}] No se pudo entrenar. Se usará lógica básica.")
+            except Exception as e:
+                logging.error(f"Error entrenando {symbol}: {e}")
+        print("="*50 + "\n")
     
     while True:
         try:
@@ -102,7 +132,11 @@ def main():
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
                 # 2. Generar señal de trading
-                signal = strategy.generate_signals(df)
+                # Pasamos el símbolo para que XGBoost sepa qué modelo usar
+                if isinstance(strategy, XGBoostStrategy):
+                    signal = strategy.generate_signals(df, symbol=symbol)
+                else:
+                    signal = strategy.generate_signals(df)
                 current_price = float(df['close'].iloc[-1])
                 logging.info(f"[{symbol}] Señal: {signal} | Precio: {current_price}")
                 
